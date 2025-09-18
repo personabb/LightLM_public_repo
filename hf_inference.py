@@ -23,9 +23,9 @@ with torch.no_grad():
     output_ids = model.generate(
         input_ids,
         max_tokens=100,
-        temperature=0.001,
+        temperature=0.7,
         top_p=0.9,
-        repetition_penalty=1.0,
+        repetition_penalty=1.2,
         use_cache=False,
     )
 
