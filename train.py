@@ -1,8 +1,11 @@
 import os
 import sys
+# LightLMローカルモジュール
 from model import Transformer, ModelConfig
 from trainer import Trainer, TrainerConfig, DataLoader
 
+
+# 外部ライブラリ
 from transformers import AutoTokenizer
 import torch
 import torch.nn.functional as F
@@ -64,7 +67,7 @@ train_config = TrainerConfig(
     eval_log_file="./log/eval.txt",
 
     continue_train = True,
-    checkpoint_path = 'model_testing/model.checkpoint.epoch0_step2250_global2250.pt',
+    checkpoint_path = 'model_testing/model.checkpoint.epoch0_step16000_global16000.pt',
 )
 
 # Colab環境向けModelConfig
@@ -95,10 +98,10 @@ config = ModelConfig(
     use_lossfreebalance=False,
 )
 
+
 # 必要なディレクトリを作成
 os.makedirs("./model_testing", exist_ok=True)
 os.makedirs("./log", exist_ok=True)
-
 
 # モデル初期化
 model = Transformer(config)
@@ -111,10 +114,10 @@ print(f"実際のパラメータ数: {total_params:,} ({total_params/1e6:.1f}M)"
 print(f"学習可能パラメータ: {trainable_params:,}")
 
 # データローダー初期化
-data_loader = DataLoader(train_config, tokenizer=tokenizer, hf_split="train", cache = "./cache", use_cache=True)
+data_loader = DataLoader(train_config, tokenizer=tokenizer, hf_split="train", cache = "../LightLM_private/cache", use_cache=True)
 
 # トレーナー初期化
 trainer = Trainer(train_config, model, tokenizer)
-print("全コンポーネント初期化完了！")
 
+print("全コンポーネント初期化完了！")
 trainer.train(data_loader)
