@@ -1,0 +1,15 @@
+*.pt
+*.pyc
+/edu_fineweb1B/
+/edu_fineweb10B/
+/.ipynb_checkpoints/
+/venv/
+/datasets/
+.DS_Store
+cache/
+command.txt
+hf_model*/
+.claude/
+__pycache__/
+CLAUDE.md
+log/

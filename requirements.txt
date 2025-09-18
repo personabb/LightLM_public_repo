@@ -1,0 +1,8 @@
+transformers
+torch
+torchvision
+torchaudio
+tqdm
+datasets
+datatrove
+huggingface_hub
