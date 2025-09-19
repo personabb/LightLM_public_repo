@@ -145,7 +145,7 @@ def convert_checkpoint_to_hf(checkpoint_path, output_dir="./hf_model"):
 
 def main():
     # デフォルトのチェックポイントパス（train.pyから）
-    default_checkpoint = "model_testing/model.checkpoint.epoch0_step16000_global16000.pt"
+    default_checkpoint = "model_testing/model.checkpoint.epoch0_step23500_global23500.pt"
 
     if not os.path.exists(default_checkpoint):
         print(f"❌ Checkpoint not found: {default_checkpoint}")

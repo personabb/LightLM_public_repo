@@ -31,7 +31,7 @@ config = ModelConfig(
 model = Transformer(config)
 
 # 2. 保存済みチェックポイントをロード
-checkpoint_path = "./model_testing/model.checkpoint.epoch0_step16000_global16000.pt"
+checkpoint_path = "./model_testing/model.checkpoint.epoch0_step23500_global23500.pt"
 checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
 # モデル重みを読み込み
@@ -45,8 +45,14 @@ for k, v in state_dict.items():
 model.load_state_dict(new_state_dict, strict=False)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device)
+dtype = torch.bfloat16 if device.type == 'cuda' else torch.float32
+model.to(device, dtype=dtype)
 model.eval()
+
+print(f"Device: {device}")
+print(f"Data type: {dtype}")
+print(f"Model loaded on {device} with {dtype}")
+print()
 
 # 3. テキスト生成の設定
 text = "I am Mike. I live in"
@@ -72,15 +78,16 @@ print()
 
 # 4. model.generate()を使用してテキスト生成
 with torch.no_grad():
-    generated_ids = model.generate(
-        x=input_ids,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        top_k=top_k,
-        top_p=top_p,
-        repetition_penalty=repetition_penalty,
-        use_cache=use_cache
-    )
+    with torch.autocast(device_type=device.type, dtype=dtype):
+        generated_ids = model.generate(
+            x=input_ids,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            use_cache=use_cache
+        )
 
 # 5. 結果の表示
 generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
