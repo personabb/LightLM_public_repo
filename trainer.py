@@ -1,6 +1,7 @@
 import time
 import math
 import os
+import glob
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Tuple
@@ -44,9 +45,10 @@ class TrainerConfig:
 
     checkpoints_frequency: int = 500
     path_to_checkpoints: str = "./model_testing"        # path to directory to save checkpoints
+    max_checkpoints_to_keep: int = 0  # 0の場合は全て保持、-1の場合は最新1つのチェックポイントを保持
 
     tokenized_dataset_path: str = ""                    # path to directory with tokeized dataset
-    sub_target_files: str = ""                          # list of target files to load from dataset (if None, load all files)
+    sub_target_files: str | list = ""                     # 単一ファイル、ワイルドカード、またはファイルリスト  (if "", load all files)
     eval_log_file: str = "logs/eval.txt"                # path to file to write eval results
 
     continue_train: bool = False                     # continue training from checkpoint
@@ -63,7 +65,7 @@ class DataLoader():
         rank, world_size: DDP 用（従来通り）
         hf_split: HuggingFace datasets の split（通常 "train"）
         streaming: HuggingFace datasets の streaming モードで読み込むか（巨大データセット用）
-        small_data_size: 動作検証用にデータセットを小さくするか（HF のみ）
+        small_data_size: 動作検証用にデータセットを小さくするか（HF のみ）（int型で取り出す件数を指定）
         """
         self.config = config
         self.current_epoch = 0
@@ -491,9 +493,27 @@ class Trainer():
                 global_step += 1
 
     def save_checkpoints(self, optimizer, scheduler, data_loader, path: str, epoch: int, step: int, global_step: int):
+        
         os.makedirs(path, exist_ok=True)
         checkpoint_path = os.path.join(path, f"model.checkpoint.epoch{epoch}_step{step}_global{global_step}.pt")
-
+        
+        # チェックポイント管理
+        if self.config.max_checkpoints_to_keep != 0:  # 0の場合は制限なし
+            existing_checkpoints = sorted(glob.glob(os.path.join(path, "model.checkpoint.*.pt")))
+            
+            if self.config.max_checkpoints_to_keep == -1:
+                # 最新1つのみ保持（全て削除）
+                for old_checkpoint in existing_checkpoints:
+                    os.remove(old_checkpoint)
+                    print(f"Deleted old checkpoint: {old_checkpoint}")
+            elif len(existing_checkpoints) >= self.config.max_checkpoints_to_keep:
+                # 指定数以上ある場合、古いものから削除
+                num_to_delete = len(existing_checkpoints) - self.config.max_checkpoints_to_keep + 1
+                for old_checkpoint in existing_checkpoints[:num_to_delete]:
+                    os.remove(old_checkpoint)
+                    print(f"Deleted old checkpoint: {os.path.basename(old_checkpoint)}")
+        
+        # チェックポイント保存
         checkpoint = {
             'model': self.model.state_dict(),
             'optimizer': optimizer.state_dict(),
@@ -507,8 +527,8 @@ class Trainer():
             'cuda_rng_state': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
         }
         torch.save(checkpoint, checkpoint_path)
-        print(f"Checkpoint saved: {checkpoint_path}")
-
+        print(f"Checkpoint saved: {checkpoint_path} (keeping max {self.config.max_checkpoints_to_keep} checkpoints)")
+          
     def load_checkpoint(self, checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
         self._checkpoint_model_state = checkpoint['model']

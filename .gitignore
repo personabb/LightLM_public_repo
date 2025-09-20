@@ -9,7 +9,7 @@
 cache/
 command.txt
 hf_model*/
-.claude/
+.clause/
 __pycache__/
 CLAUDE.md
 log/
