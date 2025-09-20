@@ -110,7 +110,7 @@ print(f"実際のパラメータ数: {total_params:,} ({total_params/1e6:.1f}M)"
 print(f"学習可能パラメータ: {trainable_params:,}")
 
 # データローダー初期化
-data_loader = DataLoader(train_config, tokenizer=tokenizer, hf_split="train", cache = "./cache", use_cache=False)
+data_loader = DataLoader(train_config, tokenizer=tokenizer, hf_split="train", cache = "./cache", use_cache=True)
 
 # トレーナー初期化
 trainer = Trainer(train_config, model, tokenizer)
