@@ -154,28 +154,69 @@ class DataLoader():
 
         # Case A: local directory with .ds and datatrove available
         if os.path.isdir(path):
-                self.dataset = DatatroveFolderDataset(
-                    folder_path=self.config.tokenized_dataset_path,
-                    filename_pattern=os.path.join(self.config.tokenized_dataset_path, "**", "*.ds"),
-                    seq_len=self.config.max_seq_len,
-                    token_size=self.token_size,
-                    recursive=True,
-                    shuffle=True,
-                    seed=seed + self.rank
-                )
-                return
+            self.dataset = DatatroveFolderDataset(
+                folder_path=self.config.tokenized_dataset_path,
+                filename_pattern=os.path.join(self.config.tokenized_dataset_path, "**", "*.ds"),
+                seq_len=self.config.max_seq_len,
+                token_size=self.token_size,
+                recursive=True,
+                shuffle=True,
+                seed=seed + self.rank
+            )
+            return
 
         # Case B: treat path as Hugging Face dataset id
         # tokenizer が必須
         if self.tokenizer is None:
             raise RuntimeError("tokenizer must be provided to DataLoader when loading from Hugging Face dataset")
 
-        print(f"Loading Hugging Face dataset '{path}' split='{self.hf_split}' and tokenizing (seq_len={self.config.max_seq_len}) ...")
+        # ストリーミングモードではキャッシュを使用しない
+        if self.streaming:
+            print(f"Loading Hugging Face dataset '{path}' in streaming mode (cache disabled) ...")
+            
+            # データセットをロード
+            if self.config.sub_target_files == "":
+                ds = load_dataset(path, split=self.hf_split, streaming=True)
+            else:
+                ds = load_dataset(
+                    path,
+                    data_files={'train': self.config.sub_target_files},
+                    split=self.hf_split,
+                    streaming=True
+                )
+            
+            # テキストカラム名を推定
+            text_col = self._find_text_column(ds)
+            
+            # トークナイズ
+            ds = ds.map(self._get_tokenize_fn(text_col), batched=True, remove_columns=ds.column_names)
+            self.dataset = ds
+            print("Dataset loaded in streaming mode.")
+            return
 
-        # load_dataset（非ストリーミングでロード。巨大データはサブセット指定を推奨）
-        ds = None
+        # 非ストリーミングモード：キャッシュ処理
+        if self.use_cache and self.cache is not None:
+            cache_path = self.cache
+            if os.path.exists(cache_path):
+                # キャッシュが存在する場合は読み込み（load_datasetをスキップ）
+                try:
+                    from datasets import load_from_disk
+                    print(f"Loading tokenized dataset from cache: {cache_path}")
+                    ds = load_from_disk(cache_path)
+                    ds.set_format(type='torch', columns=['input_ids'])
+                    ds = ds.shuffle(seed + self.rank)
+                    self.dataset = ds
+                    print("Dataset loaded from cache.")
+                    return
+                except Exception as e:
+                    print(f"Failed to load cache: {e}. Reprocessing dataset...")
+                    # キャッシュの読み込みに失敗した場合は再処理
+
+        # データセットをロードしてトークナイズ
+        print(f"Loading Hugging Face dataset '{path}' split='{self.hf_split}' and tokenizing (seq_len={self.config.max_seq_len}) ...")
+        
         if self.config.sub_target_files == "":
-            ds = load_dataset(path, split=self.hf_split, streaming=self.streaming)
+            ds = load_dataset(path, split=self.hf_split, streaming=False)
         else:
             ds = load_dataset(
                 path,
@@ -183,59 +224,60 @@ class DataLoader():
                 split=self.hf_split
             )
 
-        if self.small_data_size is not None and not self.streaming:
-            ds = ds.take(self.small_data_size)  # 動作検証用に小さくする
+        if self.small_data_size is not None:
+            ds = ds.take(self.small_data_size)
 
-        # テキストカラム名を推定（通常は 'text' ）
-        text_col = None
-        # まず 'text' があれば使う
-        if 'text' in ds.column_names:
-            text_col = 'text'
-        else:
-            # それ以外はサンプルの型を見て最初の str カラムを採用
-            sample = ds[0]
-            for col in ds.column_names:
-                if isinstance(sample[col], str):
-                    text_col = col
-                    break
-
-        if text_col is None:
-            raise RuntimeError(f"Could not find a text column in dataset {path}. Columns: {ds.column_names}")
-
+        # テキストカラム名を推定
+        text_col = self._find_text_column(ds)
         print(f"Using text column: '{text_col}'")
 
-        # トークナイズ関数
-        def tokenize_fn(batch):
-            # batch[text_col] はリスト（batched=True）
-            return self.tokenizer(batch[text_col],
-                                  truncation=True,
-                                  max_length=self.config.max_seq_len,
-                                  padding='max_length')
-
-        # map して元カラムを削除し、'input_ids' のみ残す（メモリ節約）
-        if hasattr(self, 'streaming') and self.streaming:
-            # ストリーミングの場合、進捗バーは表示できないため 'desc' は不要
-            ds = ds.map(tokenize_fn, batched=True, remove_columns=ds.column_names)
-        else:
-            if self.cache is not None and not self.use_cache:
-                # 通常データセットの場合は 'desc' で進捗バーを表示できる
-                ds = ds.map(tokenize_fn, batched=True, new_fingerprint="tok-v1", remove_columns=ds.column_names, desc="Tokenizing dataset")
-                os.makedirs(self.cache, exist_ok=True)
-                ds.save_to_disk(self.cache)
-            else:
-                from datasets import load_from_disk
-                print(f"Loading tokenized dataset from cache: {self.cache}")
-                ds = load_from_disk(self.cache)
-
-        # torch Tensor で取り出せるようにする
+        # トークナイズ
+        ds = ds.map(
+            self._get_tokenize_fn(text_col), 
+            batched=True, 
+            remove_columns=ds.column_names, 
+            desc="Tokenizing dataset"
+        )
+        
+        # キャッシュに保存（use_cacheがTrueでcacheパスが指定されている場合）
+        if self.use_cache and self.cache is not None:
+            os.makedirs(self.cache, exist_ok=True)
+            print(f"Saving tokenized dataset to cache: {self.cache}")
+            ds.save_to_disk(self.cache)
+        
+        # torch形式に設定してシャッフル
         ds.set_format(type='torch', columns=['input_ids'])
-
-        # shuffle（seed を使う） - ストリーミングでは shuffle の挙動が異なる点に注意
-        if not (hasattr(self, 'streaming') and self.streaming):
-             ds = ds.shuffle(seed + self.rank)
-
+        ds = ds.shuffle(seed + self.rank)
         self.dataset = ds
-        print("Dataset loaded.")
+        print("Dataset loaded and processed.")
+
+    def _find_text_column(self, ds):
+        """テキストカラム名を推定するヘルパーメソッド"""
+        if 'text' in ds.column_names:
+            return 'text'
+        
+        # streaming modeの場合はfirst exampleを取得
+        if hasattr(ds, 'take'):
+            sample = next(iter(ds.take(1)))
+        else:
+            sample = ds[0]
+        
+        for col in ds.column_names:
+            if isinstance(sample[col], str):
+                return col
+        
+        raise RuntimeError(f"Could not find a text column in dataset. Columns: {ds.column_names}")
+
+    def _get_tokenize_fn(self, text_col):
+        """トークナイズ関数を返すヘルパーメソッド"""
+        def tokenize_fn(batch):
+            return self.tokenizer(
+                batch[text_col],
+                truncation=True,
+                max_length=self.config.max_seq_len,
+                padding='max_length'
+            )
+        return tokenize_fn
 
     def num_train_steps(self):
         print("Calculating number of training steps...")
@@ -528,7 +570,7 @@ class Trainer():
         }
         torch.save(checkpoint, checkpoint_path)
         print(f"Checkpoint saved: {checkpoint_path} (keeping max {self.config.max_checkpoints_to_keep} checkpoints)")
-          
+
     def load_checkpoint(self, checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
         self._checkpoint_model_state = checkpoint['model']
