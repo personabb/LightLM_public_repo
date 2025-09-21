@@ -300,7 +300,10 @@ class Trainer():
         self.weight_decay = config.weight_decay
         self.update_rate = config.update_rate if self.use_moe else 0
 
-        self.device = torch.device(f"cuda:0") if torch.cuda.is_available() else 'cpu'
+        self.device = torch.device(f"cuda:0") if torch.cuda.is_available() else 'cpu' #cpuでは学習はできません
+        if self.device == 'cpu':
+            raise RuntimeError("Training on CPU is not supported. Please use a GPU.")
+
         if self.device.type == 'cuda':
             torch.cuda.manual_seed(config.seed)
             n_gpus = torch.cuda.device_count()
