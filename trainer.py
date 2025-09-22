@@ -10,6 +10,12 @@ from typing import Tuple
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+# Import GradScaler for mixed precision training
+try:
+    from torch.amp import GradScaler  # New PyTorch format
+except ImportError:
+    from torch.cuda.amp import GradScaler  # Legacy format
+
 from datatrove.utils.dataset import DatatroveFolderDataset
 
 # datasets を使って Hugging Face Hub から読み込む
@@ -27,6 +33,12 @@ class TrainerConfig:
     clean_cuda_cache: bool = True   # Helps prevent OOM errors during eval on large models
     use_compile: bool = True        # use torch.compile()
     use_dtype: str = "bfloat16"
+
+    # GradScaler settings (automatically used when use_dtype="float16" on CUDA)
+    grad_scaler_init_scale: float = 2.**12     # Initial scale for GradScaler
+    grad_scaler_growth_factor: float = 2.0     # Scale growth factor
+    grad_scaler_backoff_factor: float = 0.5    # Scale backoff factor when overflow
+    grad_scaler_growth_interval: int = 2000    # Intervals between scale growth
 
     seed: int = 1998                
     max_seq_len: int = 1024         # maximum context length for batch
@@ -297,6 +309,31 @@ class Trainer():
         self.clean_cuda_cache = config.clean_cuda_cache
         self.dtype = getattr(torch, self.config.use_dtype)
 
+        # Initialize GradScaler for float16 + CUDA only
+        self.use_grad_scaler = (self.config.use_dtype == "float16" and
+                               torch.cuda.is_available())
+        if self.use_grad_scaler:
+            # Support both new and legacy GradScaler formats
+            try:
+                # New PyTorch format (device as first argument)
+                self.grad_scaler = GradScaler(
+                    'cuda',
+                    init_scale=config.grad_scaler_init_scale,
+                    growth_factor=config.grad_scaler_growth_factor,
+                    backoff_factor=config.grad_scaler_backoff_factor,
+                    growth_interval=config.grad_scaler_growth_interval
+                )
+            except TypeError:
+                # Legacy format (no device argument)
+                self.grad_scaler = GradScaler(
+                    init_scale=config.grad_scaler_init_scale,
+                    growth_factor=config.grad_scaler_growth_factor,
+                    backoff_factor=config.grad_scaler_backoff_factor,
+                    growth_interval=config.grad_scaler_growth_interval
+                )
+        else:
+            self.grad_scaler = None
+
         self.steps_for_eval = config.steps_for_eval
         self.weight_decay = config.weight_decay
         self.update_rate = config.update_rate if self.use_moe else 0
@@ -360,6 +397,7 @@ class Trainer():
             print(f"Model's trainable params: {sum([p.data.numel() for p in self.model.parameters() if p.requires_grad]) / 1e6:.2f}M")
             print(f"Tokens per step: {self.config.batch_size * self.config.max_seq_len * self.ddp_world_size * self.config.accumulation_steps}")
             print(f"use {'torch.compile()'}: {use_compile}")
+            print(f"Use GradScaler: {'Yes' if self.use_grad_scaler else 'No'} (dtype: {self.config.use_dtype})")
             print(f"Use MoE: {'Yes ' if self.use_moe else 'No'}")
             if self.use_moe:
                 print(f"Number of experts: {self.model.blocks[0].ffn.num_experts}")
@@ -391,7 +429,11 @@ class Trainer():
 
         loss /= accumulation_steps
 
-        loss.backward()
+        # GradScaler-aware backward pass
+        if self.use_grad_scaler:
+            self.grad_scaler.scale(loss).backward()
+        else:
+            loss.backward()
         return loss, ce_loss, num_tokens
     
 
@@ -500,9 +542,19 @@ class Trainer():
                             error = avg_count - count.float()
                             self.model.blocks[block].ffn.expert_biases.data[i] += self.update_rate * torch.sign(error)
 
-                norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                # GradScaler-aware optimization step
+                if self.use_grad_scaler:
+                    # Unscale gradients before clipping
+                    self.grad_scaler.unscale_(optimizer)
+                    norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
 
-                optimizer.step()
+                    # Step and update scaler
+                    self.grad_scaler.step(optimizer)
+                    self.grad_scaler.update()
+                else:
+                    norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    optimizer.step()
+
                 optimizer.zero_grad()
                 scheduler.step()
 
