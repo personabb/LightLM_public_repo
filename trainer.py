@@ -2,6 +2,7 @@ import time
 import math
 import os
 import glob
+import re
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Tuple
@@ -544,7 +545,14 @@ class Trainer():
         
         # チェックポイント管理
         if self.config.max_checkpoints_to_keep != 0:  # 0の場合は制限なし
-            existing_checkpoints = sorted(glob.glob(os.path.join(path, "model.checkpoint.*.pt")))
+            checkpoint_files = glob.glob(os.path.join(path, "model.checkpoint.*.pt"))
+
+            # global_stepの数値でソート（文字列ソートではなく数値ソート）
+            def extract_global_step(filename):
+                match = re.search(r'global(\d+)\.pt$', filename)
+                return int(match.group(1)) if match else 0
+
+            existing_checkpoints = sorted(checkpoint_files, key=extract_global_step)
             
             if self.config.max_checkpoints_to_keep == -1:
                 # 最新1つのみ保持（全て削除）
