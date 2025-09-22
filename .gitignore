@@ -6,7 +6,7 @@
 /venv/
 /datasets/
 .DS_Store
-cache/
+cache*/
 command.txt
 hf_model*/
 .clause/
